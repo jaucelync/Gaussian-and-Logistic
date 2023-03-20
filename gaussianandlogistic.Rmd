@@ -1,0 +1,484 @@
+---
+title: "Classify Stroke Data Using Gaussian Classifier and Logistic Regression"
+author: "Jaucelyn Canfield"
+date: 
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, tidy.opts=list(width.cutoff=60),tidy=TRUE)
+```
+
+## Introduction
+
+For my project I will use a data set that has 11 features used to predict whether a person will have a stroke or not. I shall consider a binary class problem where one class represents a stroke (Class 1) and the other class represents no stroke (Class 0). I have chosen two classification methods to classify the data: Gaussian Classifier and Logistic Regression. In the case for logistic regression, the beta coefficients are found by using iterative least squares and performing 100 bootstraps on the train data to and then taking the mean of each beta value.
+
+## Data Exploration
+
+```{r}
+# Read in data
+data <- read.csv("/Users/jaucelyncanfield/documents/stat 760/healthcare-dataset-stroke-data.csv",header=T)
+
+```
+
+```{r}
+head(data)
+```
+
+```{r}
+#Clean Data
+
+#check for NAs
+#NA is inputted as N/A so I need to fix it
+for(i in 1:nrow(data)){
+  for(j in 1:ncol(data)){
+    if(data[i,j]=="N/A"){
+      data[i,j] <- NA
+    }
+  }
+}
+
+sum(is.na(data))
+
+#remove observations where bmi is NA
+data <- na.omit(data)
+```
+
+```{r}
+#redefine variables
+data$gender <- ifelse(data$gender=="Male",1,0)
+data$ever_married <- ifelse(data$ever_married=="Yes",1,0)
+#consider private vs other instead of all three cases
+data$work_type <- ifelse(data$work_type=="Private",1,0) 
+data$Residence_type <- ifelse(data$Residence_type=="Urban",1,0)
+data$bmi <- as.numeric(data$bmi)
+```
+
+There are too many observations where the `smoking_status` is unknown. So we will not consider this feature in our classification.
+
+```{r}
+#remove first column with id and the smoking status feature
+data <- data[,-c(1,11)]
+```
+
+Now, we will check for Multicollinearity.
+
+```{r}
+knitr::kable(cor(data))
+```
+
+`Age` and `ever_married` appear to be highly correlated. Since `ever_married` has a lower correlation with `stroke` than `age`, we will remove `ever_married`.
+
+```{r}
+#remove ever_married
+data <- data[,-5]
+```
+
+```{r}
+#split data into 80% train and 20% test
+index <- sample(1:nrow(data),nrow(data)*.8,replace = FALSE)
+
+train <- data[index,]
+test <- data[-index,]
+
+```
+
+```{r}
+#create a label for the two classes of stroke and no stroke
+classes <- c(0:1)
+```
+
+## Gaussian Classifier
+
+```{r}
+# Create data frame to store the means of each class
+means <- data.frame(matrix(NA,
+                               nrow=(ncol(data)-1),
+                               ncol=length(classes)))
+
+
+rownames(means) <- colnames(data[,-9])
+colnames(means) <- classes
+
+#Store mean of each class for each feature
+for(i in classes){
+    means[,i+1] <- colMeans(train[train$stroke==i,-9])
+}
+
+
+
+```
+
+```{r}
+#create a list to store the two covariance matrices for each class
+Cov <- list()
+
+#create covariance matrices
+for(i in classes) {
+  temp_cov <- matrix(0,
+                     nrow = ncol(data)-1,
+                     ncol = ncol(data)-1)
+  for(j in 1:sum(train$stroke==i)) {
+    mat <- matrix(as.numeric(train[train$stroke==i, -9][j,] - means[,i+1]), 
+                  nrow = 8, ncol = 1, byrow=TRUE)
+    temp_cov <- temp_cov + (mat %*% t(mat))
+  }
+  Cov[[i+1]] <- (1/sum(train$stroke==i)) * temp_cov
+}
+```
+
+```{r}
+# Store train data distances to mean point for each class 
+# Using Mahalanobis distance
+
+mahalanobis_dist <- data.frame(matrix(NA,
+                                nrow=nrow(train),
+                                ncol=length(classes)))
+colnames(mahalanobis_dist) <- classes
+
+for(i in classes) {
+  for(j in 1:nrow(train)) {
+    mat <- matrix(as.numeric(train[j, -9] - means[,i+1]), 
+                  nrow = 8, ncol = 1, byrow=TRUE)
+    mahalanobis_dist[j,i+1] <- t(mat) %*% solve(Cov[[i+1]]) %*% mat
+  }
+}
+```
+
+```{r}
+
+train_pred <- data.frame(matrix(NA,
+                                nrow = nrow(train),
+                                ncol = length(classes)))
+
+# Store probabilities from multivariate normal probability function
+for(i in classes) {
+  train_pred[,i+1] <- ((1/sqrt(det(2*pi*Cov[[i+1]])))*exp(-0.5*mahalanobis_dist[,i+1]))
+}
+
+
+pred_class_train <- c()
+
+# Store predicted class of train data based on class with highest probability
+for(i in 1:nrow(train)) {
+  pred_class_train <- c(pred_class_train, as.numeric(which.max(train_pred[i,])))
+}
+
+train$class <- ifelse(train$stroke == 0,1,2)
+cat(c("The misclassification error for the train data is: ", 
+      round(mean((train$class != pred_class_train)^2), 7)))
+
+```
+
+```{r}
+# Store test data distances to mean point for each class 
+# Using Mahalanobis distance
+mahalanobis_dist_test <- data.frame(matrix(NA,
+                                nrow=nrow(test),
+                                ncol=length(classes)))
+colnames(mahalanobis_dist_test) <- classes
+
+for(i in classes) {
+  for(j in 1:nrow(test)) {
+    #using means and covariance matrices from training data
+    mat <- matrix(as.numeric(test[j, -9] - means[,i+1]),  
+                  nrow = 8, ncol = 1, byrow=TRUE)
+    mahalanobis_dist_test[j,i+1] <- t(mat) %*% solve(Cov[[i+1]]) %*% mat
+  }
+}
+
+test_pred <- data.frame(matrix(NA,
+                                nrow = nrow(test),
+                                ncol = length(classes)))
+
+# Store probabilities from multivariate normal probability function
+for(i in classes) {
+  test_pred[,i+1] <- ((1/sqrt(det(2*pi*Cov[[i+1]])))*exp(-0.5*mahalanobis_dist_test[,i+1]))
+}
+
+pred_class_test <- c()
+
+
+# Store predicted class of test data based on class with highest probability
+for(i in 1:nrow(test)) {
+  pred_class_test <- c(pred_class_test, which.max(test_pred[i,]))
+}
+
+test$class <- ifelse(test$stroke == 0,1,2)
+cat(c("The misclassification error for the test data is: ", 
+      round(mean((test$class != pred_class_test)^2), 7)))
+
+```
+
+The class distribution is highly unbalanced; there are for more many observations belonging to the Class 0 (no stroke) than to the Class 1 (stroke). I am curious if we can get better results by addressing this. We will re-balance the classes by under-sampling the observations that belong to Class 0.
+
+```{r}
+data_stroke <- data[data$stroke==1,]
+data_nostroke <- data[data$stroke==0,]
+ind <- sample(1:nrow(data_nostroke),sum(data$stroke),replace = FALSE)
+data_nostroke_reduced <- data_nostroke[ind,]
+data_balanced <- rbind(data_stroke,data_nostroke_reduced)
+```
+
+```{r}
+#split data into 80% train and 20% test
+
+index2 <- sample(1:nrow(data_balanced),nrow(data_balanced)*.8,replace = FALSE)
+
+train <- data_balanced[index2,]
+test <- data_balanced[-index2,]
+
+
+```
+
+The rest of the Gaussian Classifier is done similarly to before, so I shall omit the code for the sake of brevity. 
+```{r,include=FALSE}
+
+means <- data.frame(matrix(NA,
+                               nrow=(ncol(data)-1),
+                               ncol=length(classes)))
+
+
+rownames(means) <- colnames(data[,-9])
+colnames(means) <- classes
+
+#Store mean of each class for each dimension
+for(i in classes){
+    means[,i+1] <- colMeans(train[train$stroke==i,-9])
+}
+
+
+
+
+Cov <- list()
+
+
+for(i in classes) {
+  temp_cov <- matrix(0,
+                     nrow = 8,
+                     ncol = 8)
+  for(j in 1:sum(train$stroke==i)) {
+    mat <- matrix(as.numeric(train[train$stroke==i, -9][j,] - means[,i+1]), 
+                  nrow = 8, ncol = 1, byrow=TRUE)
+    temp_cov <- temp_cov + (mat %*% t(mat))
+  }
+  Cov[[i+1]] <- (1/sum(train$stroke==i)) * temp_cov
+}
+
+# Store train data distances to mean point for each class 
+# Using Mahalanobis distance
+mahalanobis_dist <- data.frame(matrix(NA,
+                                nrow=nrow(train),
+                                ncol=length(classes)))
+colnames(mahalanobis_dist) <- classes
+
+for(i in classes) {
+  for(j in 1:nrow(train)) {
+    mat <- matrix(as.numeric(train[j, -9] - means[,i+1]), 
+                  nrow = 8, ncol = 1, byrow=TRUE)
+    mahalanobis_dist[j,i+1] <- t(mat) %*% solve(Cov[[i+1]]) %*% mat
+  }
+}
+
+
+train_pred <- data.frame(matrix(NA,
+                                nrow = nrow(train),
+                                ncol = length(classes)))
+
+# Store probabilities from multivariate normal probability function
+for(i in classes) {
+  train_pred[,i+1] <- ((1/sqrt(det(2*pi*Cov[[i+1]])))*exp(-0.5*mahalanobis_dist[,i+1]))
+}
+
+
+pred_class_train <- c()
+
+# Store predicted class of train data based on class with highest probability
+for(i in 1:nrow(train)) {
+  pred_class_train <- c(pred_class_train, as.numeric(which.max(train_pred[i,])))
+}
+
+train$class <- ifelse(train$stroke == 0,1,2)
+cat(c("The misclassification error for the train data is: ", 
+      round(mean((train$class != pred_class_train)^2), 7),"\n"))
+
+
+# Store test data distances to mean point for each class 
+# Using Mahalanobis distance
+mahalanobis_dist_test <- data.frame(matrix(NA,
+                                nrow=nrow(test),
+                                ncol=length(classes)))
+colnames(mahalanobis_dist_test) <- classes
+
+for(i in classes) {
+  for(j in 1:nrow(test)) {
+    #using means and covariance matrices from training data
+    mat <- matrix(as.numeric(test[j, -9] - means[,i+1]),  
+                  nrow = 8, ncol = 1, byrow=TRUE)
+    mahalanobis_dist_test[j,i+1] <- t(mat) %*% solve(Cov[[i+1]]) %*% mat
+  }
+}
+
+test_pred <- data.frame(matrix(NA,
+                                nrow = nrow(test),
+                                ncol = length(classes)))
+
+# Store probabilities from multivariate normal probability function
+for(i in classes) {
+  test_pred[,i+1] <- ((1/sqrt(det(2*pi*Cov[[i+1]])))*exp(-0.5*mahalanobis_dist_test[,i+1]))
+}
+
+
+pred_class_test <- c()
+
+
+# Store predicted class of test data based on class with highest probability
+for(i in 1:nrow(test)) {
+  pred_class_test <- c(pred_class_test, which.max(test_pred[i,]))
+}
+```
+
+```{r}
+test$class <- ifelse(test$stroke == 0,1,2)
+cat(c("The misclassification error for the test data is: ", 
+      round(mean((test$class != pred_class_test)^2), 7)))
+```
+
+This does not appear to do any better. Let us go back to the previously defined `test` and `train` data.
+
+```{r}
+#reset the test and train data to what they were before
+train <- data[index,]
+test <- data[-index,]
+```
+
+## Logistic Regression
+
+```{r}
+#remove class column that was created with the Gaussian classifier
+train <- train[,-10]
+test <- test[,-10]
+```
+
+```{r}
+# Create vectors to store betas from each bootstrap
+beta <- data.frame(matrix(NA, nrow=100, ncol=9))
+colnames(beta) <- c("intercept", colnames(train[,-9]))
+# 100 bootstrap iterations
+for(i in 1:100) {
+  dat_index <- sample(1:nrow(train), nrow(train), replace = TRUE)
+  dat <- data[dat_index, ]
+  # Separate into X matrix (with intercept column) and Y matrix
+  X <- cbind(intercept = rep(1,nrow(dat)), dat[,1:8])
+  Y <- dat[,9]
+  # Initial Assignments
+  beta_old <- rep(0, ncol(X))
+  W <- diag(nrow = nrow(X))
+  mat_x <- as.matrix(X, nrow = ncol(X),ncol = nrow(X),byrow = TRUE)
+  p_x <- c()
+  for(j in 1:nrow(X)) {
+    p_x[j] <- exp(t(beta_old) %*% mat_x[j,])/(1 + exp(t(beta_old) %*% mat_x[j,]))
+  }
+  z <- mat_x %*% beta_old + solve(W) %*% (Y-p_x)
+  beta_new <- solve(t(mat_x) %*% W %*% mat_x) %*% t(mat_x) %*% W %*% z
+  # While any of the betas are not within 0.000000001 of the previous beta
+  while(any(abs(beta_new-beta_old) >= 0.000000001)) {
+  # new beta from last iteration becomes old bets
+  beta_old <- beta_new
+  # Find probabilities
+  p_x <- c()
+  for(j in 1:nrow(X)) {
+    p_x[j] <- exp(t(beta_old) %*% mat_x[j,])/(1 + exp(t(beta_old) %*% mat_x[j,]))
+  }
+  # Find weights matrix
+  W <- diag(p_x * (1-p_x))
+  #Solve for z: adjusted response
+  z <- mat_x %*% beta_old + solve(W) %*% (Y-p_x)
+  # Solve for new beta using iteratively reweighted least squares
+  beta_new <- solve(t(mat_x) %*% W %*% mat_x) %*% t(mat_x) %*% W %*% z
+  }
+  beta[i,] <- beta_new
+}
+mean_beta <- apply(beta, 2, mean)
+var_beta <- apply(beta, 2, var)
+bootstrap <- data.frame("Mean" = round(mean_beta,8),
+"Variance" = round(var_beta,8),
+check.names = FALSE)
+```
+
+```{r}
+cat(c("Mean and Variance of Each Coefficient", '\n',
+"Based on 100 Bootstrap Iterations",'\n'))
+print(bootstrap)
+```
+
+```{r}
+train_pred2 <- c()
+
+# Store probabilities of having a stroke with logistic regression equation
+for(j in 1:nrow(train)){
+  train_pred2[j] <- exp(bootstrap$Mean[1]+ bootstrap$Mean[2]*train[j,1]+bootstrap$Mean[3]*train[j,2]+
+                        bootstrap$Mean[4]*train[j,3]+bootstrap$Mean[5]*train[j,4]+
+                          bootstrap$Mean[6]*train[j,5]+
+                        bootstrap$Mean[7]*train[j,6]+bootstrap$Mean[8]*train[j,7]+
+                          bootstrap$Mean[9]*train[j,8])/
+                      (1 + exp(bootstrap$Mean[1]+ bootstrap$Mean[2]*train[j,1]+
+                                 bootstrap$Mean[3]*train[j,2]+
+                        bootstrap$Mean[4]*train[j,3]+bootstrap$Mean[5]*train[j,4]+
+                          bootstrap$Mean[6]*train[j,5]+
+                        bootstrap$Mean[7]*train[j,6]+bootstrap$Mean[8]*train[j,7]+
+                          bootstrap$Mean[9]*train[j,8]))
+}
+
+# Create vector to store predicted class for train data based on probabilities
+pred_class_train2 <- c()
+
+
+# Store predicted class of test data based on class with highest probability
+pred_class_train2 <- ifelse(train_pred2 > 0.5,1,0)
+
+
+cat(c("The misclassification error for the train data is: ", 
+      round(mean((train$stroke != pred_class_train2)^2), 7)))
+
+
+```
+
+```{r}
+test_pred2 <- c()
+
+# Store probabilities of having a stroke with logistic regression equation
+for(j in 1:nrow(test)){
+  test_pred2[j] <- exp(bootstrap$Mean[1]+bootstrap$Mean[2]*test[j,1]+bootstrap$Mean[3]*test[j,2]+
+                        bootstrap$Mean[4]*test[j,3]+bootstrap$Mean[5]*test[j,4]+
+                         bootstrap$Mean[6]*test[j,5]+
+                         bootstrap$Mean[7]*test[j,6]+bootstrap$Mean[8]*test[j,7]+
+                         bootstrap$Mean[9]*test[j,8])/
+                    (1 + exp(bootstrap$Mean[1]+ bootstrap$Mean[2]*test[j,1]+
+                    bootstrap$Mean[3]*test[j,2]+ bootstrap$Mean[4]*test[j,3]+ 
+                      bootstrap$Mean[5]*test[j,4]+
+                      bootstrap$Mean[6]*test[j,5]+bootstrap$Mean[7]*test[j,6]+
+                      bootstrap$Mean[8]*test[j,7]+
+                      bootstrap$Mean[9]*test[j,8]))
+}
+    
+```
+
+```{r}
+# Create vector to store predicted class for test data based on probabilities
+pred_class_test2 <- c()
+
+
+# Store predicted class of test data based on class with highest probability
+pred_class_test2 <- ifelse(test_pred2 > 0.5,1,0)
+
+
+cat(c("The misclassification error for the test data is: ", 
+      round(mean((test$stroke != pred_class_test2)^2), 7)))
+
+```
+
+
+## Conclusion
+
+While the Gaussian Classifier wasn't bad, Logistic Regression performed very well and produced very low misclassification error rates.
